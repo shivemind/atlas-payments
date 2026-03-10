@@ -1,0 +1,3750 @@
+openapi: 3.1.0
+info:
+  title: Atlas Payments API
+  version: 0.2.0
+  description: Core payment processing — intents, captures, refunds, balance, and payment methods
+  contact:
+    name: AtlasPayments Team
+    url: https://github.com/shivemind/atlaspayments
+servers:
+  - url: http://localhost:3000
+    description: Local development server. Override via Postman {{baseUrl}} environment variable.
+tags:
+  - name: Auth
+    description: API key identity and authentication endpoints
+  - name: Customers
+    description: Customer lifecycle management
+  - name: PaymentMethods
+    description: Payment method tokenization and management
+  - name: SetupIntents
+    description: Setup intents for attaching payment methods to customers
+  - name: PaymentIntents
+    description: Payment intent create, confirm, capture, and cancel
+  - name: Refunds
+    description: Refund processing and queries
+  - name: Balances
+    description: Merchant balance snapshots derived from ledger
+  - name: Ops
+    description: Health, readiness, and operational checks
+  - name: Ledger
+    description: Ledger account queries and balance transactions
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      description: Returns a lightweight liveness status. No DB or Redis dependency.
+      x-platform:
+        kind: ops
+        entity: HealthCheck
+        affectsLedger: false
+      operationId: getHealth
+      tags:
+        - Ops
+      responses:
+        "200":
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - service
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: atlaspayments
+                  timestamp:
+                    type: string
+                    format: date-time
+              examples:
+                healthy:
+                  value:
+                    status: ok
+                    service: atlaspayments
+                    timestamp: 2026-02-27T23:30:00.000Z
+  /api/readiness:
+    get:
+      summary: Readiness check
+      description: Returns readiness status including database connectivity.
+      x-platform:
+        kind: ops
+        entity: ReadinessCheck
+        affectsLedger: false
+      operationId: getReadiness
+      tags:
+        - Ops
+      responses:
+        "200":
+          description: Service and all dependencies are ready.
+          content:
+            application/json:
+              examples:
+                ready:
+                  value:
+                    status: ready
+                    service: atlaspayments
+                    checks:
+                      database: ok
+                    timestamp: 2026-03-01T12:00:00.000Z
+        "503":
+          description: Service is not ready — one or more dependencies are unavailable.
+          content:
+            application/json:
+              examples:
+                notReady:
+                  value:
+                    status: not_ready
+                    service: atlaspayments
+                    checks:
+                      database: error
+                    timestamp: 2026-03-01T12:00:00.000Z
+  /api/v1/me:
+    get:
+      summary: Get current API key identity
+      description: Returns the authenticated merchant and API key metadata.
+      x-platform:
+        kind: resource
+        entity: ApiKey
+        affectsLedger: false
+      operationId: getCurrentIdentity
+      tags:
+        - Auth
+      security:
+        - MerchantKeyAuth: []
+      responses:
+        "200":
+          description: Merchant and API key metadata for the authenticated key.
+          headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - merchant
+                  - apiKey
+                properties:
+                  merchant:
+                    type: object
+                    required:
+                      - id
+                      - name
+                      - status
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      status:
+                        type: string
+                  apiKey:
+                    type: object
+                    required:
+                      - id
+                      - name
+                      - role
+                      - scopes
+                      - keyPrefix
+                      - createdAt
+                      - lastUsedAt
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      role:
+                        type: string
+                        enum:
+                          - MERCHANT
+                          - PLATFORM_ADMIN
+                      scopes:
+                        type: array
+                        items:
+                          type: string
+                      keyPrefix:
+                        type: string
+                      createdAt:
+                        type: string
+                        format: date-time
+                      lastUsedAt:
+                        type: string
+                        format: date-time
+                        nullable: true
+              examples:
+                merchantKey:
+                  value:
+                    merchant:
+                      id: cmf1merchant123
+                      name: Acme Merchant
+                      status: ACTIVE
+                    apiKey:
+                      id: cmf1apikey123
+                      name: Primary key
+                      role: MERCHANT
+                      scopes:
+                        - me:read
+                        - payments:read
+                      keyPrefix: sk_test_va
+                      createdAt: 2026-02-27T23:30:00.000Z
+                      lastUsedAt: null
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                authRequired:
+                  value:
+                    error:
+                      code: AUTH_REQUIRED
+                      message: Authorization bearer token is required.
+        "429":
+          description: Fixed-window rate limit exceeded.
+          headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                limited:
+                  value:
+                    error:
+                      code: RATE_LIMITED
+                      message: Rate limit exceeded.
+  /api/v1/customers:
+    get:
+      summary: List customers
+      description: Returns a paginated list of customers for the authenticated merchant.
+      x-platform:
+        kind: resource
+        entity: Customer
+        affectsLedger: false
+      operationId: listCustomers
+      tags:
+        - Customers
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          description: Paginated list of merchant customers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+              examples:
+                pageOne:
+                  value:
+                    data:
+                      - id: cmf1customer123
+                        merchantId: cmf1merchant123
+                        email: customer@example.com
+                        name: Jane Customer
+                        createdAt: 2026-02-28T10:00:00.000Z
+                    pagination:
+                      page: 1
+                      pageSize: 10
+                      total: 1
+                      hasMore: false
+        "400":
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Create customer
+      description: Creates a new customer record scoped to the authenticated merchant.
+      x-platform:
+        kind: resource
+        entity: Customer
+        emitsEvents: []
+        affectsLedger: false
+        workflowRefs:
+          - attach_payment_method
+          - subscription_lifecycle
+      operationId: createCustomer
+      tags:
+        - Customers
+      security:
+        - MerchantKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                externalId:
+                  type: string
+                  description: Caller-defined external reference ID.
+                email:
+                  type: string
+                  format: email
+                name:
+                  type: string
+                metadata:
+                  type: object
+                  additionalProperties: true
+            examples:
+              basic:
+                value:
+                  externalId: cust_ext_001
+                  email: customer@example.com
+                  name: Jane Customer
+                  metadata:
+                    tier: gold
+      responses:
+        "201":
+          description: Customer created successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - customer
+                properties:
+                  customer:
+                    type: object
+                    required:
+                      - id
+                      - merchantId
+                      - createdAt
+                      - updatedAt
+                    properties:
+                      id:
+                        type: string
+                      merchantId:
+                        type: string
+                      externalId:
+                        type: string
+                        nullable: true
+                      email:
+                        type: string
+                        nullable: true
+                      name:
+                        type: string
+                        nullable: true
+                      metadata:
+                        type: object
+                        additionalProperties: true
+                        nullable: true
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
+              examples:
+                created:
+                  value:
+                    customer:
+                      id: "{{customerId}}"
+                      merchantId: cmf1merchant123
+                      externalId: cust_ext_001
+                      email: customer@example.com
+                      name: Jane Customer
+                      metadata:
+                        tier: gold
+                      createdAt: 2026-02-28T10:00:00.000Z
+                      updatedAt: 2026-02-28T10:00:00.000Z
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/customers/{id}:
+    get:
+      summary: Get customer by ID
+      description: Returns a single customer record scoped to the authenticated merchant.
+      x-platform:
+        kind: resource
+        entity: Customer
+        affectsLedger: false
+      operationId: getCustomerById
+      tags:
+        - Customers
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Customer found for the authenticated merchant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - customer
+                properties:
+                  customer:
+                    type: object
+              examples:
+                found:
+                  value:
+                    customer:
+                      id: "{{customerId}}"
+                      merchantId: cmf1merchant123
+                      email: customer@example.com
+                      name: Jane Customer
+                      createdAt: 2026-02-28T10:00:00.000Z
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Customer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notFound:
+                  value:
+                    error:
+                      code: CUSTOMER_NOT_FOUND
+                      message: Customer not found.
+  /api/v1/payment_methods:
+    get:
+      summary: List payment methods
+      description: Returns a paginated list of payment methods for the authenticated merchant, with optional filters.
+      x-platform:
+        kind: resource
+        entity: PaymentMethod
+        affectsLedger: false
+      operationId: listPaymentMethods
+      tags:
+        - PaymentMethods
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - in: query
+          name: customer_id
+          description: Filter by customer ID.
+          schema:
+            type: string
+        - in: query
+          name: type
+          description: Filter by payment method type.
+          schema:
+            type: string
+            enum:
+              - card
+              - bank_account
+              - wallet
+        - in: query
+          name: status
+          description: Filter by payment method status.
+          schema:
+            type: string
+            enum:
+              - active
+              - expired
+              - revoked
+      responses:
+        "200":
+          description: Paginated list of payment methods.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+              examples:
+                page:
+                  value:
+                    data:
+                      - id: cmf1pm123
+                        merchant_id: cmf1merchant123
+                        customer_id: cmf1customer123
+                        type: card
+                        status: active
+                        last4: "4242"
+                        brand: visa
+                    pagination:
+                      page: 1
+                      pageSize: 10
+                      total: 1
+                      hasMore: false
+        "400":
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Create payment method
+      description: >
+        Attaches a tokenized payment method to a customer. Uses deterministic mock processing: last4 ending in "5" →
+        expired, otherwise active. Emits `payment_method.created`.
+      x-platform:
+        kind: transition
+        entity: PaymentMethod
+        stateChanges:
+          - created
+        emitsEvents:
+          - payment_method.created
+        affectsLedger: false
+        workflowRefs:
+          - attach_payment_method
+      operationId: createPaymentMethod
+      tags:
+        - PaymentMethods
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - customer_id
+                - last4
+              properties:
+                customer_id:
+                  type: string
+                  description: ID of the customer to attach the payment method to.
+                type:
+                  type: string
+                  enum:
+                    - card
+                    - bank_account
+                    - wallet
+                  default: card
+                last4:
+                  type: string
+                  minLength: 4
+                  maxLength: 4
+                  pattern: ^\d{4}$
+                  description: Last 4 digits of the payment instrument.
+                brand:
+                  type: string
+                  description: Card brand (e.g. visa, mastercard).
+                expiry_month:
+                  type: integer
+                  minimum: 1
+                  maximum: 12
+                expiry_year:
+                  type: integer
+                  minimum: 2024
+                  maximum: 2099
+                billing_name:
+                  type: string
+                billing_email:
+                  type: string
+                  format: email
+                metadata:
+                  type: object
+                  additionalProperties: true
+            examples:
+              visa:
+                value:
+                  customer_id: "{{customerId}}"
+                  type: card
+                  last4: "4242"
+                  brand: visa
+                  expiry_month: 12
+                  expiry_year: 2028
+                  billing_name: Jane Customer
+                  billing_email: jane@example.com
+      responses:
+        "201":
+          description: Payment method created and attached to customer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - payment_method
+                properties:
+                  payment_method:
+                    type: object
+                    required:
+                      - id
+                      - merchant_id
+                      - customer_id
+                      - type
+                      - status
+                      - created_at
+                      - updated_at
+                    properties:
+                      id:
+                        type: string
+                      merchant_id:
+                        type: string
+                      customer_id:
+                        type: string
+                      type:
+                        type: string
+                        enum:
+                          - card
+                          - bank_account
+                          - wallet
+                      status:
+                        type: string
+                        enum:
+                          - active
+                          - expired
+                          - revoked
+                      last4:
+                        type: string
+                        nullable: true
+                      brand:
+                        type: string
+                        nullable: true
+                      expiry_month:
+                        type: integer
+                        nullable: true
+                      expiry_year:
+                        type: integer
+                        nullable: true
+                      fingerprint:
+                        type: string
+                        nullable: true
+                      billing_name:
+                        type: string
+                        nullable: true
+                      billing_email:
+                        type: string
+                        nullable: true
+                      metadata:
+                        type: object
+                        nullable: true
+                      created_at:
+                        type: string
+                        format: date-time
+                      updated_at:
+                        type: string
+                        format: date-time
+              examples:
+                created:
+                  value:
+                    payment_method:
+                      id: cmf1pm123
+                      merchant_id: cmf1merchant123
+                      customer_id: "{{customerId}}"
+                      type: card
+                      status: active
+                      last4: "4242"
+                      brand: visa
+                      expiry_month: 12
+                      expiry_year: 2028
+                      fingerprint: a1b2c3d4e5f67890
+                      billing_name: Jane Customer
+                      billing_email: jane@example.com
+                      metadata: null
+                      created_at: 2026-03-01T10:00:00.000Z
+                      updated_at: 2026-03-01T10:00:00.000Z
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Customer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Idempotency key conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/payment_methods/{id}:
+    get:
+      summary: Get payment method by ID
+      description: Returns a single payment method scoped to the authenticated merchant.
+      x-platform:
+        kind: resource
+        entity: PaymentMethod
+        affectsLedger: false
+      operationId: getPaymentMethod
+      tags:
+        - PaymentMethods
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Payment method found.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - payment_method
+                properties:
+                  payment_method:
+                    type: object
+              examples:
+                found:
+                  value:
+                    payment_method:
+                      id: cmf1pm123
+                      merchant_id: cmf1merchant123
+                      customer_id: cmf1customer123
+                      type: card
+                      status: active
+                      last4: "4242"
+                      brand: visa
+                      created_at: 2026-03-01T10:00:00.000Z
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Payment method not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notFound:
+                  value:
+                    error:
+                      code: PAYMENT_METHOD_NOT_FOUND
+                      message: Payment method not found.
+    patch:
+      summary: Update payment method billing info
+      description: >
+        Updates billing details or metadata on an existing payment method. Emits `payment_method.updated`. Cannot update
+        revoked methods.
+      x-platform:
+        kind: transition
+        entity: PaymentMethod
+        emitsEvents:
+          - payment_method.updated
+        affectsLedger: false
+        stateChanges:
+          - metadata_updated
+      operationId: updatePaymentMethod
+      tags:
+        - PaymentMethods
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                billing_name:
+                  type: string
+                billing_email:
+                  type: string
+                  format: email
+                metadata:
+                  type: object
+                  additionalProperties: true
+            examples:
+              updateBilling:
+                value:
+                  billing_name: Jane Updated
+                  billing_email: updated@example.com
+      responses:
+        "200":
+          description: Payment method updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - payment_method
+                properties:
+                  payment_method:
+                    type: object
+              examples:
+                updated:
+                  value:
+                    payment_method:
+                      id: cmf1pm123
+                      billing_name: Jane Updated
+                      billing_email: updated@example.com
+                      status: active
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Payment method not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Cannot update a revoked payment method.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                revoked:
+                  value:
+                    error:
+                      code: PAYMENT_METHOD_REVOKED
+                      message: Cannot update a revoked payment method.
+    delete:
+      summary: Detach/revoke payment method
+      description: >
+        Revokes a payment method, setting its status to `revoked`. Emits `payment_method.revoked`. Idempotent —
+        already-revoked returns 409.
+      x-platform:
+        kind: transition
+        entity: PaymentMethod
+        stateChanges:
+          - active -> revoked
+          - expired -> revoked
+        emitsEvents:
+          - payment_method.revoked
+        affectsLedger: false
+      operationId: deletePaymentMethod
+      tags:
+        - PaymentMethods
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Payment method revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - payment_method
+                properties:
+                  payment_method:
+                    type: object
+              examples:
+                revoked:
+                  value:
+                    payment_method:
+                      id: cmf1pm123
+                      status: revoked
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Payment method not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Payment method is already revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/customers/{id}/payment_methods:
+    get:
+      summary: List customer payment methods
+      description: Returns a paginated list of payment methods attached to a specific customer.
+      x-platform:
+        kind: resource
+        entity: PaymentMethod
+        affectsLedger: false
+      operationId: listCustomerPaymentMethods
+      tags:
+        - PaymentMethods
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - in: query
+          name: type
+          description: Filter by payment method type.
+          schema:
+            type: string
+            enum:
+              - card
+              - bank_account
+              - wallet
+        - in: query
+          name: status
+          description: Filter by payment method status.
+          schema:
+            type: string
+            enum:
+              - active
+              - expired
+              - revoked
+      responses:
+        "200":
+          description: Paginated list of customer payment methods.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+              examples:
+                page:
+                  value:
+                    data:
+                      - id: cmf1pm123
+                        type: card
+                        status: active
+                        last4: "4242"
+                        brand: visa
+                    pagination:
+                      page: 1
+                      pageSize: 10
+                      total: 1
+                      hasMore: false
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Customer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/setup_intents:
+    get:
+      summary: List setup intents
+      description: Returns a paginated list of setup intents for the authenticated merchant.
+      x-platform:
+        kind: resource
+        entity: SetupIntent
+        affectsLedger: false
+      operationId: listSetupIntents
+      tags:
+        - SetupIntents
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - in: query
+          name: customer_id
+          description: Filter by customer ID.
+          schema:
+            type: string
+        - in: query
+          name: status
+          description: Filter by setup intent status.
+          schema:
+            type: string
+            enum:
+              - created
+              - processing
+              - succeeded
+              - failed
+              - canceled
+      responses:
+        "200":
+          description: Paginated list of setup intents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+              examples:
+                page:
+                  value:
+                    data:
+                      - id: cmf1si123
+                        merchant_id: cmf1merchant123
+                        customer_id: cmf1customer123
+                        status: created
+                        usage: off_session
+                    pagination:
+                      page: 1
+                      pageSize: 10
+                      total: 1
+                      hasMore: false
+        "400":
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Create setup intent
+      description: >
+        Creates a setup intent in `created` status for attaching a payment method to a customer. Emits
+        `setup_intent.created`.
+      x-platform:
+        kind: transition
+        entity: SetupIntent
+        stateChanges:
+          - created
+        emitsEvents:
+          - setup_intent.created
+        affectsLedger: false
+        workflowRefs:
+          - attach_payment_method
+          - subscription_lifecycle
+      operationId: createSetupIntent
+      tags:
+        - SetupIntents
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - customer_id
+              properties:
+                customer_id:
+                  type: string
+                  description: ID of the customer for this setup intent.
+                usage:
+                  type: string
+                  enum:
+                    - off_session
+                    - on_session
+                  default: off_session
+                  description: How the payment method will be used.
+                metadata:
+                  type: object
+                  additionalProperties: true
+            examples:
+              basic:
+                value:
+                  customer_id: "{{customerId}}"
+                  usage: off_session
+      responses:
+        "201":
+          description: Setup intent created in `created` status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - setup_intent
+                properties:
+                  setup_intent:
+                    type: object
+                    required:
+                      - id
+                      - merchant_id
+                      - customer_id
+                      - status
+                      - usage
+                      - created_at
+                      - updated_at
+                    properties:
+                      id:
+                        type: string
+                      merchant_id:
+                        type: string
+                      customer_id:
+                        type: string
+                      payment_method_id:
+                        type: string
+                        nullable: true
+                      status:
+                        type: string
+                        enum:
+                          - created
+                          - processing
+                          - succeeded
+                          - failed
+                          - canceled
+                      usage:
+                        type: string
+                      cancellation_reason:
+                        type: string
+                        nullable: true
+                      metadata:
+                        type: object
+                        nullable: true
+                      created_at:
+                        type: string
+                        format: date-time
+                      updated_at:
+                        type: string
+                        format: date-time
+              examples:
+                created:
+                  value:
+                    setup_intent:
+                      id: cmf1si123
+                      merchant_id: cmf1merchant123
+                      customer_id: "{{customerId}}"
+                      payment_method_id: null
+                      status: created
+                      usage: off_session
+                      cancellation_reason: null
+                      metadata: null
+                      created_at: 2026-03-01T10:00:00.000Z
+                      updated_at: 2026-03-01T10:00:00.000Z
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Customer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Idempotency key conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/setup_intents/{id}:
+    get:
+      summary: Get setup intent by ID
+      description: Returns a single setup intent scoped to the authenticated merchant.
+      x-platform:
+        kind: resource
+        entity: SetupIntent
+        affectsLedger: false
+      operationId: getSetupIntent
+      tags:
+        - SetupIntents
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Setup intent found.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - setup_intent
+                properties:
+                  setup_intent:
+                    type: object
+              examples:
+                found:
+                  value:
+                    setup_intent:
+                      id: cmf1si123
+                      merchant_id: cmf1merchant123
+                      customer_id: cmf1customer123
+                      status: created
+                      usage: off_session
+                      created_at: 2026-03-01T10:00:00.000Z
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Setup intent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notFound:
+                  value:
+                    error:
+                      code: SETUP_INTENT_NOT_FOUND
+                      message: Setup intent not found.
+  /api/v1/setup_intents/{id}/confirm:
+    post:
+      summary: Confirm setup intent
+      description: >
+        Confirms a setup intent by attaching a payment method and transitioning through CREATED → PROCESSING →
+        SUCCEEDED/FAILED. Uses deterministic mock: payment methods with last4 ending in "5" fail, otherwise succeed.
+        Emits `setup_intent.succeeded` or `setup_intent.failed`.
+      x-platform:
+        kind: transition
+        entity: SetupIntent
+        stateChanges:
+          - created -> processing -> succeeded
+          - created -> processing -> failed
+        emitsEvents:
+          - setup_intent.succeeded
+          - setup_intent.failed
+        affectsLedger: false
+        workflowRefs:
+          - attach_payment_method
+      operationId: confirmSetupIntent
+      tags:
+        - SetupIntents
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - payment_method_id
+              properties:
+                payment_method_id:
+                  type: string
+                  description: ID of the payment method to confirm with.
+            examples:
+              confirm:
+                value:
+                  payment_method_id: cmf1pm123
+      responses:
+        "200":
+          description: Setup intent confirmed; final status is succeeded or failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - setup_intent
+                properties:
+                  setup_intent:
+                    type: object
+              examples:
+                succeeded:
+                  value:
+                    setup_intent:
+                      id: cmf1si123
+                      merchant_id: cmf1merchant123
+                      customer_id: cmf1customer123
+                      payment_method_id: cmf1pm123
+                      status: succeeded
+                      usage: off_session
+                failed:
+                  value:
+                    setup_intent:
+                      id: cmf1si456
+                      merchant_id: cmf1merchant123
+                      customer_id: cmf1customer123
+                      payment_method_id: cmf1pm456
+                      status: failed
+                      usage: off_session
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Setup intent or payment method not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition (not in created status).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidTransition:
+                  value:
+                    error:
+                      code: INVALID_STATE_TRANSITION
+                      message: Cannot transition from 'SUCCEEDED' to 'PROCESSING'.
+  /api/v1/setup_intents/{id}/cancel:
+    post:
+      summary: Cancel setup intent
+      description: >
+        Cancels a setup intent in `created` status. Emits `setup_intent.canceled`. Optionally accepts a cancellation
+        reason.
+      x-platform:
+        kind: transition
+        entity: SetupIntent
+        stateChanges:
+          - created -> canceled
+        emitsEvents:
+          - setup_intent.canceled
+        affectsLedger: false
+      operationId: cancelSetupIntent
+      tags:
+        - SetupIntents
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cancellation_reason:
+                  type: string
+                  maxLength: 500
+                  description: Optional reason for canceling the setup intent.
+            examples:
+              withReason:
+                value:
+                  cancellation_reason: Customer requested cancellation
+      responses:
+        "200":
+          description: Setup intent canceled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - setup_intent
+                properties:
+                  setup_intent:
+                    type: object
+              examples:
+                canceled:
+                  value:
+                    setup_intent:
+                      id: cmf1si123
+                      merchant_id: cmf1merchant123
+                      customer_id: cmf1customer123
+                      status: canceled
+                      cancellation_reason: Customer requested cancellation
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Setup intent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition (not in created status).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidTransition:
+                  value:
+                    error:
+                      code: INVALID_STATE_TRANSITION
+                      message: Cannot transition from 'SUCCEEDED' to 'CANCELED'.
+  /api/v1/payment_intents:
+    post:
+      summary: Create payment intent
+      description: >
+        Creates a payment intent in `requires_confirmation` status and emits a `payment_intent.created` webhook delivery
+        record. Requires `Idempotency-Key` header.
+      x-platform:
+        kind: transition
+        entity: PaymentIntent
+        stateChanges:
+          - requires_confirmation
+        emitsEvents:
+          - payment_intent.created
+        affectsLedger: true
+        workflowRefs:
+          - payment_and_refund
+          - subscription_lifecycle
+      operationId: createPaymentIntent
+      tags:
+        - PaymentIntents
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - amount
+                - currency
+                - payment_method_token
+              properties:
+                amount:
+                  type: integer
+                  minimum: 1
+                currency:
+                  type: string
+                  minLength: 3
+                  maxLength: 3
+                customer_id:
+                  type: string
+                payment_method_token:
+                  type: string
+                metadata:
+                  type: object
+                  additionalProperties: true
+            examples:
+              basic:
+                value:
+                  amount: 2500
+                  currency: USD
+                  customer_id: "{{customerId}}"
+                  payment_method_token: pm_tok_visa
+                  metadata:
+                    order_id: ord_123
+      responses:
+        "201":
+          description: Payment intent created in `requires_confirmation` status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - payment_intent
+                properties:
+                  payment_intent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      merchant_id:
+                        type: string
+                      customer_id:
+                        type: string
+                        nullable: true
+                      amount:
+                        type: integer
+                      currency:
+                        type: string
+                      status:
+                        type: string
+                        example: requires_confirmation
+                      payment_method_token:
+                        type: string
+                      metadata:
+                        type: object
+                        nullable: true
+                      created_at:
+                        type: string
+                        format: date-time
+                      updated_at:
+                        type: string
+                        format: date-time
+              examples:
+                created:
+                  value:
+                    payment_intent:
+                      id: "{{paymentIntentId}}"
+                      merchant_id: cmf1merchant123
+                      customer_id: "{{customerId}}"
+                      amount: 2500
+                      currency: USD
+                      status: requires_confirmation
+                      payment_method_token: pm_tok_visa
+                      metadata:
+                        order_id: ord_123
+                      created_at: 2026-02-28T12:00:00.000Z
+                      updated_at: 2026-02-28T12:00:00.000Z
+        "400":
+          description: Invalid payload or missing Idempotency-Key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Customer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Idempotency key conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/payment_intents/{id}/capture:
+    post:
+      summary: Capture payment intent
+      description: >
+        Captures a `succeeded` payment intent, posts pending→available ledger movement, and emits
+        `payment_intent.succeeded`.
+      x-platform:
+        kind: transition
+        entity: PaymentIntent
+        stateChanges:
+          - succeeded -> captured
+        emitsEvents:
+          - payment_intent.succeeded
+        affectsLedger: true
+        workflowRefs:
+          - payment_and_refund
+          - settlement_and_payout
+      operationId: capturePaymentIntent
+      tags:
+        - PaymentIntents
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Payment intent captured; ledger settlement posted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payment_intent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      merchant_id:
+                        type: string
+                      amount:
+                        type: integer
+                      currency:
+                        type: string
+                      status:
+                        type: string
+                        example: succeeded
+                      captured_at:
+                        type: string
+                        format: date-time
+                        nullable: true
+              examples:
+                captured:
+                  value:
+                    payment_intent:
+                      id: "{{paymentIntentId}}"
+                      merchant_id: cmf1merchant123
+                      amount: 2500
+                      currency: USD
+                      status: succeeded
+                      captured_at: 2026-03-01T09:30:00.000Z
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Payment intent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state for capture.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidState:
+                  value:
+                    error:
+                      code: INVALID_PAYMENT_INTENT_STATE
+                      message: Payment intent must be in succeeded status before capture.
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/payment_intents/{id}/cancel:
+    post:
+      summary: Cancel payment intent
+      description: |
+        Cancels a `requires_confirmation` payment intent and emits `payment_intent.canceled`.
+      x-platform:
+        kind: transition
+        entity: PaymentIntent
+        stateChanges:
+          - requires_confirmation -> canceled
+        emitsEvents:
+          - payment_intent.canceled
+        affectsLedger: false
+        workflowRefs:
+          - payment_and_refund
+      operationId: cancelPaymentIntent
+      tags:
+        - PaymentIntents
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Payment intent canceled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payment_intent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      merchant_id:
+                        type: string
+                      status:
+                        type: string
+                        example: canceled
+              examples:
+                canceled:
+                  value:
+                    payment_intent:
+                      id: "{{paymentIntentId}}"
+                      merchant_id: cmf1merchant123
+                      status: canceled
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Payment intent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state for cancellation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/refunds:
+    get:
+      summary: List refunds
+      description: Returns a paginated list of refunds for the authenticated merchant.
+      x-platform:
+        kind: resource
+        entity: Refund
+        affectsLedger: false
+      operationId: listRefunds
+      tags:
+        - Refunds
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          description: Paginated list of merchant refunds.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+              examples:
+                page:
+                  value:
+                    data:
+                      - id: cmf1refund123
+                        amount: 2500
+                        status: succeeded
+                    pagination:
+                      page: 1
+                      pageSize: 10
+                      total: 1
+                      hasMore: false
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Create refund
+      description: >
+        Creates a refund for a captured payment intent (partial supported). Posts ledger reversal entries and emits
+        `refund.created` + `refund.succeeded`.
+      x-platform:
+        kind: transition
+        entity: Refund
+        stateChanges:
+          - created -> succeeded
+        emitsEvents:
+          - refund.created
+          - refund.succeeded
+        affectsLedger: true
+        workflowRefs:
+          - payment_and_refund
+      operationId: createRefund
+      tags:
+        - Refunds
+      security:
+        - MerchantKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - payment_intent_id
+                - amount
+              properties:
+                payment_intent_id:
+                  type: string
+                amount:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+            examples:
+              basic:
+                value:
+                  payment_intent_id: "{{paymentIntentId}}"
+                  amount: 2500
+                  reason: requested_by_customer
+      responses:
+        "201":
+          description: Refund created and immediately succeeded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refund:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      merchant_id:
+                        type: string
+                      payment_intent_id:
+                        type: string
+                      amount:
+                        type: integer
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                        nullable: true
+                      created_at:
+                        type: string
+                        format: date-time
+              examples:
+                refunded:
+                  value:
+                    refund:
+                      id: cmf1refund123
+                      merchant_id: cmf1merchant123
+                      payment_intent_id: "{{paymentIntentId}}"
+                      amount: 2500
+                      status: succeeded
+                      reason: requested_by_customer
+                      created_at: 2026-03-01T10:00:00.000Z
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Payment intent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Not captured or amount exceeds refundable balance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/refunds/{id}:
+    get:
+      summary: Get refund by ID
+      description: Returns a single refund scoped to the authenticated merchant.
+      x-platform:
+        kind: resource
+        entity: Refund
+        affectsLedger: false
+      operationId: getRefundById
+      tags:
+        - Refunds
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Refund found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refund:
+                    type: object
+              examples:
+                found:
+                  value:
+                    refund:
+                      id: cmf1refund123
+                      amount: 2500
+                      status: succeeded
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Refund not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/balance:
+    get:
+      summary: Get merchant balances
+      description: Returns a ledger-derived balance snapshot for the authenticated merchant.
+      x-platform:
+        kind: report
+        entity: Balance
+        affectsLedger: false
+        workflowRefs:
+          - settlement_and_payout
+      operationId: getBalance
+      tags:
+        - Balances
+      security:
+        - MerchantKeyAuth: []
+      responses:
+        "200":
+          description: Current balance snapshot derived from ledger.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - available
+                  - pending
+                  - platform_fees
+                  - processor_fees
+                properties:
+                  available:
+                    type: integer
+                  pending:
+                    type: integer
+                  platform_fees:
+                    type: integer
+                  processor_fees:
+                    type: integer
+              examples:
+                snapshot:
+                  value:
+                    available: 7500
+                    pending: 2500
+                    platform_fees: 300
+                    processor_fees: 200
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/balance_transactions:
+    get:
+      summary: List balance transactions
+      description: |
+        Returns a paginated, filtered list of ledger journal entry movements for the authenticated merchant.
+      x-platform:
+        kind: report
+        entity: LedgerJournalEntry
+        affectsLedger: false
+        workflowRefs:
+          - reconciliation_cycle
+          - settlement_and_payout
+      operationId: listBalanceTransactions
+      tags:
+        - Ledger
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - in: query
+          name: from
+          description: Filter entries on or after this ISO 8601 timestamp.
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          description: Filter entries before this ISO 8601 timestamp.
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: type
+          description: Filter by transaction type.
+          schema:
+            type: string
+            enum:
+              - all
+              - confirm
+              - capture
+              - refund
+              - other
+            default: all
+      responses:
+        "200":
+          description: Paginated ledger movement records.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+              examples:
+                movements:
+                  value:
+                    data:
+                      - id: cmf1entry123
+                        reference: cmf1pi123
+                        description: Payment intent confirm
+                        type: confirm
+                        status: POSTED
+                        posted_at: 2026-03-01T09:00:00.000Z
+                        debit_total: 2500
+                        credit_total: 2500
+                    pagination:
+                      page: 1
+                      pageSize: 10
+                      total: 1
+                      hasMore: false
+        "400":
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/customers/{id}/subscriptions:
+    get:
+      summary: List customer subscriptions
+      description: Returns paginated subscriptions for a specific customer.
+      x-platform:
+        kind: resource
+        entity: Subscription
+        affectsLedger: false
+      operationId: listCustomerSubscriptions
+      tags:
+        - Subscriptions
+        - Customers
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum:
+              - incomplete
+              - incomplete_expired
+              - trialing
+              - active
+              - past_due
+              - paused
+              - canceled
+              - unpaid
+          description: Filter by subscription status.
+      responses:
+        "200":
+          description: Paginated list of customer subscriptions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Subscription"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Customer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/customers/{id}/invoices:
+    get:
+      summary: List customer invoices
+      description: Returns paginated invoices for a specific customer.
+      x-platform:
+        kind: resource
+        entity: Invoice
+        affectsLedger: false
+      operationId: listCustomerInvoices
+      tags:
+        - Invoices
+        - Customers
+      security:
+        - MerchantKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum:
+              - draft
+              - open
+              - paid
+              - void
+              - uncollectible
+              - past_due
+          description: Filter by invoice status.
+      responses:
+        "200":
+          description: Paginated list of customer invoices.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Invoice"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Customer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/internal/ops/jobs:
+    get:
+      summary: List jobs
+      description: Returns a paginated list of background jobs.
+      x-platform:
+        kind: resource
+        entity: Job
+        affectsLedger: false
+      operationId: listJobs
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - in: query
+          name: type
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum:
+              - queued
+              - running
+              - completed
+              - failed
+              - canceled
+      responses:
+        "200":
+          description: Paginated list of jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Job"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Create job
+      description: Creates a new background job.
+      x-platform:
+        kind: resource
+        entity: Job
+        affectsLedger: false
+      operationId: createJob
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                payload:
+                  type: object
+                max_attempts:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 3
+                scheduled_at:
+                  type: string
+                  format: date-time
+            examples:
+              settlement_job:
+                value:
+                  type: settlement_batch
+                  payload:
+                    merchant_id: m_abc123
+                  max_attempts: 5
+      responses:
+        "201":
+          description: Job created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: "#/components/schemas/Job"
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/internal/ops/jobs/{id}:
+    get:
+      summary: Get job
+      description: Returns a single job by ID.
+      x-platform:
+        kind: resource
+        entity: Job
+        affectsLedger: false
+      operationId: getJob
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Job details.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: "#/components/schemas/Job"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Job not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      summary: Update job
+      description: Updates the status and metadata of a job.
+      x-platform:
+        kind: transition
+        entity: Job
+        affectsLedger: false
+        stateChanges:
+          - metadata_updated
+      operationId: updateJob
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - queued
+                    - running
+                    - completed
+                    - failed
+                    - canceled
+                result:
+                  type: object
+                error_message:
+                  type: string
+      responses:
+        "200":
+          description: Job updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: "#/components/schemas/Job"
+        "400":
+          description: Invalid request payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Job not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/internal/ops/jobs/{id}/cancel:
+    post:
+      summary: Cancel job
+      description: Cancels a queued or running job.
+      x-platform:
+        kind: transition
+        entity: Job
+        affectsLedger: false
+        stateChanges:
+          - running -> canceled
+      operationId: cancelJob
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Job canceled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: "#/components/schemas/Job"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Job not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Job is not in a cancelable state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/internal/ops/jobs/{id}/retry:
+    post:
+      summary: Retry failed job
+      description: Re-queues a failed job for retry.
+      x-platform:
+        kind: transition
+        entity: Job
+        affectsLedger: false
+        stateChanges:
+          - failed -> pending
+      operationId: retryJob
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Job re-queued for retry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: "#/components/schemas/Job"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Job not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Job is not in a retryable state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/internal/ops/dead_letters:
+    get:
+      summary: List dead letters
+      description: Returns a paginated list of dead letter entries.
+      x-platform:
+        kind: resource
+        entity: DeadLetter
+        affectsLedger: false
+      operationId: listDeadLetters
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - in: query
+          name: source_type
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum:
+              - pending
+              - reprocessed
+              - discarded
+      responses:
+        "200":
+          description: Paginated list of dead letters.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - pagination
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DeadLetter"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/internal/ops/dead_letters/{id}:
+    get:
+      summary: Get dead letter
+      description: Returns a single dead letter entry by ID.
+      x-platform:
+        kind: resource
+        entity: DeadLetter
+        affectsLedger: false
+      operationId: getDeadLetter
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Dead letter details.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dead_letter:
+                    $ref: "#/components/schemas/DeadLetter"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Dead letter not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/internal/ops/dead_letters/{id}/reprocess:
+    post:
+      summary: Reprocess dead letter
+      description: Marks a pending dead letter as reprocessed.
+      x-platform:
+        kind: transition
+        entity: DeadLetter
+        affectsLedger: false
+        stateChanges:
+          - dead -> pending
+      operationId: reprocessDeadLetter
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Dead letter marked as reprocessed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dead_letter:
+                    $ref: "#/components/schemas/DeadLetter"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Dead letter not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Dead letter is not in a reprocessable state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/internal/ops/dead_letters/{id}/discard:
+    post:
+      summary: Discard dead letter
+      description: Marks a pending dead letter as discarded.
+      x-platform:
+        kind: transition
+        entity: DeadLetter
+        affectsLedger: false
+        stateChanges:
+          - dead -> discarded
+      operationId: discardDeadLetter
+      tags:
+        - Ops
+      security:
+        - PlatformAdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Dead letter discarded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dead_letter:
+                    $ref: "#/components/schemas/DeadLetter"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Dead letter not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Dead letter is not in a discardable state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  securitySchemes:
+    MerchantKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Key
+      description: |
+        Bearer API key for merchant-scoped operations. Pass as `Authorization: Bearer {{merchantApiKey}}`.
+    PlatformAdminKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Key
+      description: |
+        Bearer API key for platform admin operations. Pass as `Authorization: Bearer {{platformAdminKey}}`.
+  schemas:
+    ErrorResponse:
+      description: Standard error response envelope returned for 4xx/5xx responses.
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code.
+            message:
+              type: string
+              description: Human-readable error description.
+    PaginationMeta:
+      description: Pagination metadata included in list responses.
+      type: object
+      required:
+        - page
+        - pageSize
+        - total
+        - hasMore
+      properties:
+        page:
+          type: integer
+          description: Current page number (1-indexed).
+        pageSize:
+          type: integer
+          description: Number of results per page.
+        total:
+          type: integer
+          description: Total number of matching records.
+        hasMore:
+          type: boolean
+          description: Whether additional pages exist.
+    CreditNote:
+      description: A credit note issued against an invoice.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        invoice_id:
+          type: string
+        number:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - issued
+            - void
+        reason:
+          type: string
+          nullable: true
+        amount:
+          type: integer
+        currency:
+          type: string
+        voided_at:
+          type: string
+          format: date-time
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CreditNoteLineItem:
+      description: A line item on a credit note.
+      type: object
+      properties:
+        id:
+          type: string
+        credit_note_id:
+          type: string
+        description:
+          type: string
+        quantity:
+          type: integer
+        unit_amount:
+          type: integer
+        amount:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+    Event:
+      description: A domain event representing a state change in the system.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        type:
+          type: string
+          description: Event type (e.g. payment_intent.succeeded).
+        entity_type:
+          type: string
+          description: Type of entity that triggered the event.
+        entity_id:
+          type: string
+          description: ID of the entity that triggered the event.
+        payload:
+          type: object
+          description: Event payload with entity snapshot.
+        actor_type:
+          type: string
+          nullable: true
+        actor_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    WebhookEndpoint:
+      description: A registered webhook endpoint for receiving event notifications.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        url:
+          type: string
+          format: uri
+        is_active:
+          type: boolean
+        enabled_events:
+          type: array
+          items:
+            type: string
+        secret:
+          type: string
+          description: Only included on creation and rotate.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    WebhookDelivery:
+      description: A webhook delivery record with attempt history.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        webhook_endpoint_id:
+          type: string
+        event_type:
+          type: string
+        payload:
+          type: object
+        status:
+          type: string
+          enum:
+            - PENDING
+            - DELIVERED
+            - FAILED
+        delivered_at:
+          type: string
+          format: date-time
+          nullable: true
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        attempts:
+          type: array
+          items:
+            type: object
+            properties:
+              attempt_number:
+                type: integer
+              response_status:
+                type: integer
+                nullable: true
+              created_at:
+                type: string
+                format: date-time
+              completed_at:
+                type: string
+                format: date-time
+                nullable: true
+    Adjustment:
+      description: A credit or debit adjustment.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        type:
+          type: string
+          enum:
+            - credit
+            - debit
+        amount:
+          type: integer
+        currency:
+          type: string
+        description:
+          type: string
+          nullable: true
+        reference:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Dispute:
+      description: A payment dispute.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        payment_intent_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - needs_response
+            - under_review
+            - won
+            - lost
+            - accepted
+            - expired
+        reason:
+          type: string
+          enum:
+            - fraudulent
+            - duplicate
+            - not_received
+            - product_unacceptable
+            - subscription_canceled
+            - other
+        amount:
+          type: integer
+        currency:
+          type: string
+        due_by:
+          type: string
+          format: date-time
+          nullable: true
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DisputeEvidence:
+      description: A piece of evidence for a dispute.
+      type: object
+      properties:
+        id:
+          type: string
+        dispute_id:
+          type: string
+        type:
+          type: string
+          enum:
+            - receipt
+            - shipping_proof
+            - customer_communication
+            - service_documentation
+            - policy_disclosure
+            - other
+        file_name:
+          type: string
+          nullable: true
+        file_size:
+          type: integer
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Representment:
+      description: A dispute representment.
+      type: object
+      properties:
+        id:
+          type: string
+        dispute_id:
+          type: string
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        outcome:
+          type: string
+          nullable: true
+        details:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    OnboardingProfile:
+      description: Merchant onboarding / KYB profile.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        business_name:
+          type: string
+          nullable: true
+        business_type:
+          type: string
+          nullable: true
+        tax_id:
+          type: string
+          nullable: true
+        website:
+          type: string
+          nullable: true
+        country:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - started
+            - submitted
+            - under_review
+            - approved
+            - denied
+            - withdrawn
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Owner:
+      description: Beneficial owner attached to an onboarding profile.
+      type: object
+      properties:
+        id:
+          type: string
+        onboarding_profile_id:
+          type: string
+        first_name:
+          type: string
+        last_name:
+          type: string
+        email:
+          type: string
+          nullable: true
+        ownership_percentage:
+          type: integer
+          nullable: true
+        title:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    OnboardingDocument:
+      description: Document record for KYB verification.
+      type: object
+      properties:
+        id:
+          type: string
+        onboarding_profile_id:
+          type: string
+        type:
+          type: string
+          enum:
+            - government_id
+            - proof_of_address
+            - bank_statement
+            - tax_return
+            - articles_of_incorporation
+            - other
+        status:
+          type: string
+          enum:
+            - pending
+            - verified
+            - rejected
+        file_name:
+          type: string
+        file_size:
+          type: integer
+          nullable: true
+        mime_type:
+          type: string
+          nullable: true
+        review_note:
+          type: string
+          nullable: true
+        reviewed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    OnboardingBankAccount:
+      description: Bank account attached to an onboarding profile.
+      type: object
+      properties:
+        id:
+          type: string
+        onboarding_profile_id:
+          type: string
+        bank_name:
+          type: string
+        account_holder_name:
+          type: string
+        routing_number:
+          type: string
+        account_number_last4:
+          type: string
+        account_type:
+          type: string
+          enum:
+            - checking
+            - savings
+        is_verified:
+          type: boolean
+        is_primary:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    UnderwritingCase:
+      description: Underwriting review case linked to an onboarding profile.
+      type: object
+      properties:
+        id:
+          type: string
+        onboarding_profile_id:
+          type: string
+        assigned_to:
+          type: string
+          nullable: true
+        risk_score:
+          type: integer
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    UnderwritingDecision:
+      description: Decision recorded against an underwriting case.
+      type: object
+      properties:
+        id:
+          type: string
+        underwriting_case_id:
+          type: string
+        result:
+          type: string
+          enum:
+            - approved
+            - denied
+            - escalated
+            - pending_info
+        reason:
+          type: string
+          nullable: true
+        decided_by:
+          type: string
+          nullable: true
+        decided_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Subscription:
+      description: A recurring billing subscription.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        customer_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - incomplete
+            - incomplete_expired
+            - trialing
+            - active
+            - past_due
+            - paused
+            - canceled
+            - unpaid
+        current_period_start:
+          type: string
+          format: date-time
+        current_period_end:
+          type: string
+          format: date-time
+        cancel_at_period_end:
+          type: boolean
+        canceled_at:
+          type: string
+          format: date-time
+          nullable: true
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        trial_start:
+          type: string
+          format: date-time
+          nullable: true
+        trial_end:
+          type: string
+          format: date-time
+          nullable: true
+        default_payment_method:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SubscriptionItem"
+    SubscriptionItem:
+      description: A line item on a subscription linking a price.
+      type: object
+      properties:
+        id:
+          type: string
+        subscription_id:
+          type: string
+        price_id:
+          type: string
+        quantity:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Invoice:
+      description: An invoice representing an amount owed by a customer.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        customer_id:
+          type: string
+        subscription_id:
+          type: string
+          nullable: true
+        number:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - draft
+            - open
+            - paid
+            - void
+            - uncollectible
+            - past_due
+        currency:
+          type: string
+        subtotal:
+          type: integer
+        tax:
+          type: integer
+        total:
+          type: integer
+        amount_paid:
+          type: integer
+        amount_due:
+          type: integer
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        voided_at:
+          type: string
+          format: date-time
+          nullable: true
+        period_start:
+          type: string
+          format: date-time
+          nullable: true
+        period_end:
+          type: string
+          format: date-time
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvoiceItem"
+    InvoiceItem:
+      description: A line item on an invoice.
+      type: object
+      properties:
+        id:
+          type: string
+        invoice_id:
+          type: string
+        description:
+          type: string
+        quantity:
+          type: integer
+        unit_amount:
+          type: integer
+        amount:
+          type: integer
+        currency:
+          type: string
+        price_id:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    InvoiceAttempt:
+      description: A payment attempt against an invoice.
+      type: object
+      properties:
+        id:
+          type: string
+        invoice_id:
+          type: string
+        attempt_number:
+          type: integer
+        amount:
+          type: integer
+        status:
+          type: string
+          enum:
+            - succeeded
+            - failed
+        error_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    Report:
+      description: An on-demand report generated for a merchant.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        type:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+            - queued
+            - processing
+            - completed
+            - failed
+        parameters:
+          type: object
+          nullable: true
+        result_url:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Export:
+      description: A data export requested by a merchant.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        type:
+          type: string
+        format:
+          type: string
+          enum:
+            - csv
+            - json
+            - pdf
+        status:
+          type: string
+          enum:
+            - queued
+            - processing
+            - completed
+            - failed
+        parameters:
+          type: object
+          nullable: true
+        result_url:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        row_count:
+          type: integer
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ExportSchedule:
+      description: A recurring export schedule configured by a merchant.
+      type: object
+      properties:
+        id:
+          type: string
+        merchant_id:
+          type: string
+        type:
+          type: string
+        format:
+          type: string
+          enum:
+            - csv
+            - json
+            - pdf
+        frequency:
+          type: string
+          enum:
+            - daily
+            - weekly
+            - monthly
+        parameters:
+          type: object
+          nullable: true
+        is_active:
+          type: boolean
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+        next_run_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Job:
+      description: A platform background job.
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+          enum:
+            - queued
+            - running
+            - completed
+            - failed
+            - canceled
+        payload:
+          type: object
+          nullable: true
+        result:
+          type: object
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        attempts:
+          type: integer
+        max_attempts:
+          type: integer
+        scheduled_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DeadLetter:
+      description: A dead letter entry for failed processing.
+      type: object
+      properties:
+        id:
+          type: string
+        source_type:
+          type: string
+        source_id:
+          type: string
+          nullable: true
+        payload:
+          type: object
+        error_message:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - reprocessed
+            - discarded
+        reprocessed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      description: |
+        Client-generated unique key for safe request retries. Identical key + payload replays the original response.
+      schema:
+        type: string
+        example: idem-key-a1b2c3d4
+    PageParam:
+      in: query
+      name: page
+      description: Page number (1-indexed).
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSizeParam:
+      in: query
+      name: pageSize
+      description: Number of results per page (max 100).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 10
+    PathId:
+      in: path
+      name: id
+      required: true
+      description: Resource identifier.
+      schema:
+        type: string
+  headers:
+    X-Signature:
+      description: HMAC SHA-256 signature computed over `timestamp.payload`.
+      schema:
+        type: string
+    X-Timestamp:
+      description: Unix timestamp (seconds) at webhook delivery time.
+      schema:
+        type: string
+    X-Event-Type:
+      description: Webhook event type string (e.g. `payment_intent.succeeded`).
+      schema:
+        type: string
+    X-RateLimit-Limit:
+      description: Maximum requests allowed in the current fixed window.
+      schema:
+        type: string
+    X-RateLimit-Remaining:
+      description: Requests remaining in the current fixed window.
+      schema:
+        type: string
+    X-RateLimit-Reset:
+      description: Unix timestamp when the current rate-limit window resets.
+      schema:
+        type: string
