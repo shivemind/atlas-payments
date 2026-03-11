@@ -11,12 +11,16 @@ export async function GET() {
       checks: { database: "ok" },
       timestamp: new Date().toISOString(),
     });
-  } catch {
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json(
       {
         status: "not_ready",
         service: "atlas-payments",
         checks: { database: "error" },
+        error: msg,
+        hasDbUrl: !!process.env.DATABASE_URL,
+        dbUrlPrefix: process.env.DATABASE_URL?.substring(0, 15) ?? "unset",
         timestamp: new Date().toISOString(),
       },
       { status: 503 },
