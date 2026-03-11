@@ -6,6 +6,12 @@ import { executeWithIdempotency } from "../../../../lib/idempotency";
 import { prisma } from "../../../../lib/prisma";
 import { queueWebhookEvent } from "../../../../lib/webhooks";
 
+const listPaymentIntentsQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().positive().max(100).default(20),
+  status: z.string().optional(),
+});
+
 const createPaymentIntentSchema = z.object({
   amount: z.number().int().positive(),
   currency: z.string().length(3).transform((value) => value.toUpperCase()),
@@ -143,6 +149,71 @@ export async function POST(request: Request) {
         },
         { status: 201 },
       );
+    },
+  });
+}
+
+export async function GET(request: Request) {
+  const authResult = await authenticateApiKey(request);
+
+  if (!authResult.ok) {
+    return NextResponse.json(
+      {
+        error: {
+          code: authResult.code,
+          message: authResult.message,
+        },
+      },
+      { status: authResult.status },
+    );
+  }
+
+  const url = new URL(request.url);
+  const parsedQuery = listPaymentIntentsQuerySchema.safeParse({
+    page: url.searchParams.get("page") ?? undefined,
+    pageSize: url.searchParams.get("pageSize") ?? undefined,
+    status: url.searchParams.get("status") ?? undefined,
+  });
+
+  if (!parsedQuery.success) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "INVALID_QUERY",
+          message: "Query validation failed.",
+          details: parsedQuery.error.flatten(),
+        },
+      },
+      { status: 400 },
+    );
+  }
+
+  const { page, pageSize, status } = parsedQuery.data;
+  const skip = (page - 1) * pageSize;
+  const merchantId = authResult.merchant.id;
+
+  const where = {
+    merchantId,
+    ...(status ? { status: status.toUpperCase() } : {}),
+  };
+
+  const [total, paymentIntents] = await Promise.all([
+    prisma.paymentIntent.count({ where }),
+    prisma.paymentIntent.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: pageSize,
+    }),
+  ]);
+
+  return NextResponse.json({
+    data: paymentIntents.map(paymentIntentResponse),
+    pagination: {
+      page,
+      pageSize,
+      total,
+      hasMore: skip + paymentIntents.length < total,
     },
   });
 }
