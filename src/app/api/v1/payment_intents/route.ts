@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import type { PaymentIntentStatus } from "@prisma/client";
+
 import { authenticateApiKey } from "../../../../lib/auth";
 import { executeWithIdempotency } from "../../../../lib/idempotency";
 import { prisma } from "../../../../lib/prisma";
@@ -194,7 +196,7 @@ export async function GET(request: Request) {
 
   const where = {
     merchantId,
-    ...(status ? { status: status.toUpperCase() } : {}),
+    ...(status ? { status: status.toUpperCase() as PaymentIntentStatus } : {}),
   };
 
   const [total, paymentIntents] = await Promise.all([
