@@ -26,7 +26,7 @@ jobs:
 
       - name: Run API tests
         run: |
-          postman collection run 52400725-da559eb5-4661-4bd4-9245-25b7b60f7358 \
+          postman collection run 52400725-5c2531a9-8c79-486e-bde7-75b455b71009 \
             -e 52400725-0c710169-0cbd-4a5b-86d3-544bc94a58bf \
             --postman-api-key ${{ secrets.POSTMAN_API_KEY }}
 
