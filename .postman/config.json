@@ -1,0 +1,23 @@
+{
+  "workspace": {
+    "id": "b810d61e-7b57-480a-ab10-687bcb04ef4e"
+  },
+  "entities": {
+    "collections": [
+      "../postman/collections/atlas-production/atlas-core.postman_collection.json",
+      "../postman/collections/atlas-production/atlas-payments.postman_collection.json",
+      "../postman/collections/atlas-production/atlas-webui.postman_collection.json",
+      "../postman/collections/atlas-production/atlas-payments.postman_collection.json",
+      "../postman/collections/atlas-production/atlas-payments.postman_collection.json",
+      "../postman/collections/atlas-production/atlas-payments.postman_collection.json",
+      "../postman/collections/Atlas Payments API.postman_collection.json"
+    ],
+    "environments": [
+      "../postman/environments/Atlas Payments API - Dev.postman_environment.json",
+      "../postman/environments/Atlas Payments API - Production.postman_environment.json"
+    ],
+    "specs": [],
+    "flows": [],
+    "globals": []
+  }
+}
