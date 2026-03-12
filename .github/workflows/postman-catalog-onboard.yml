@@ -33,7 +33,7 @@ jobs:
       - name: Trigger Monitor Run
         run: |
           curl -s -X POST \
-            "https://api.getpostman.com/monitors/52400725-1f11e404-8b57-4db0-8852-c66f02580c08/run" \
+            "https://api.getpostman.com/monitors/52400725-1f11e442-c344-4af0-b630-242b526ec7b8/run" \
             -H "X-Api-Key: ${{ secrets.POSTMAN_API_KEY }}"
 
       - name: Summary
