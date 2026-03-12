@@ -1,0 +1,40 @@
+name: Postman Catalog Onboard
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  collection-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Postman CLI
+        run: |
+          curl -o- "https://dl-cli.pstmn.io/install/linux64.sh" | sh
+
+      - name: Login to Postman CLI
+        run: postman login --with-api-key ${{ secrets.POSTMAN_API_KEY }}
+
+      - name: Run API tests
+        run: |
+          postman collection run 52400725-da559eb5-4661-4bd4-9245-25b7b60f7358 \
+            -e 52400725-0c710169-0cbd-4a5b-86d3-544bc94a58bf \
+            --postman-api-key ${{ secrets.POSTMAN_API_KEY }}
+
+      - name: Trigger Monitor Run
+        run: |
+          curl -s -X POST \
+            "https://api.getpostman.com/monitors/52400725-1f11e404-8b57-4db0-8852-c66f02580c08/run" \
+            -H "X-Api-Key: ${{ secrets.POSTMAN_API_KEY }}"
+
+      - name: Summary
+        run: echo "Postman Catalog Onboard workflow completed successfully."
