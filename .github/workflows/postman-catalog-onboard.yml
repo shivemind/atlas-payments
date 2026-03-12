@@ -2,8 +2,7 @@ name: Postman Catalog Onboard
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
   schedule:
     - cron: '0 */6 * * *'
@@ -13,28 +12,40 @@ permissions:
 
 jobs:
   collection-run:
+    name: Run API Collection
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Postman CLI
-        run: |
-          curl -o- "https://dl-cli.pstmn.io/install/linux64.sh" | sh
+        run: curl -o- "https://dl-cli.pstmn.io/install/linux64.sh" | sh
 
-      - name: Login to Postman CLI
+      - name: Login to Postman
         run: postman login --with-api-key ${{ secrets.POSTMAN_API_KEY }}
 
-      - name: Run API tests
+      - name: Run Collection
         run: |
           postman collection run 52400725-5c2531a9-8c79-486e-bde7-75b455b71009 \
             -e 52400725-0c710169-0cbd-4a5b-86d3-544bc94a58bf \
             --postman-api-key ${{ secrets.POSTMAN_API_KEY }}
 
       - name: Trigger Monitor Run
+        continue-on-error: true
         run: |
-          curl -s -X POST \
-            "https://api.getpostman.com/monitors/52400725-1f11e442-c344-4af0-b630-242b526ec7b8/run" \
-            -H "X-Api-Key: ${{ secrets.POSTMAN_API_KEY }}"
+          MONITOR_UID=$(curl -sf "https://api.getpostman.com/monitors" \
+            -H "x-api-key: ${{ secrets.POSTMAN_API_KEY }}" \
+            | jq -r '.monitors[] | select(.name == "Atlas Payments API - Health Monitor") | .uid' | head -1)
+          if [ -n "$MONITOR_UID" ]; then
+            echo "Triggering monitor $MONITOR_UID"
+            curl -sf -X POST "https://api.getpostman.com/monitors/$MONITOR_UID/run" \
+              -H "x-api-key: ${{ secrets.POSTMAN_API_KEY }}" || true
+          else
+            echo "Monitor not found, skipping"
+          fi
 
       - name: Summary
-        run: echo "Postman Catalog Onboard workflow completed successfully."
+        if: always()
+        run: |
+          echo "### Postman Catalog Onboard - Atlas Payments" >> $GITHUB_STEP_SUMMARY
+          echo "- **Collection**: 52400725-5c2531a9-8c79-486e-bde7-75b455b71009" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workspace**: [b810d61e-7b57-480a-ab10-687bcb04ef4e](https://go.postman.co/workspace/b810d61e-7b57-480a-ab10-687bcb04ef4e)" >> $GITHUB_STEP_SUMMARY
