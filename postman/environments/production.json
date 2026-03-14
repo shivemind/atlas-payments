@@ -1,0 +1,32 @@
+﻿{
+    "id":  "0c710169-0cbd-4a5b-86d3-544bc94a58bf",
+    "name":  "Atlas Payments API - Production",
+    "owner":  "52400725",
+    "createdAt":  "2026-03-11T21:40:09.000Z",
+    "updatedAt":  "2026-03-14T03:04:50.000Z",
+    "values":  [
+                   {
+                       "key":  "baseUrl",
+                       "value":  "https://atlas-payments.vercel.app",
+                       "enabled":  true
+                   },
+                   {
+                       "key":  "apiVersion",
+                       "value":  "0.2.0",
+                       "enabled":  true
+                   },
+                   {
+                       "key":  "apiKey",
+                       "value":  "test-api-key",
+                       "enabled":  true,
+                       "type":  "secret"
+                   },
+                   {
+                       "key":  "githubRepo",
+                       "value":  "https://github.com/shivemind/atlas-payments",
+                       "enabled":  true
+                   }
+               ],
+    "uid":  "52400725-0c710169-0cbd-4a5b-86d3-544bc94a58bf",
+    "isPublic":  false
+}
